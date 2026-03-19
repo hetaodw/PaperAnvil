@@ -107,7 +107,6 @@ JSON 结构：{{"personas": [{{画像1}}, {{画像2}}, ... ]}}"""
             is_answering = False
             answer_content = ""
             
-            print(f">>> 第 {batch_num} 批思考中...")
             for chunk in completion:
                 delta = chunk.choices[0].delta
                 if hasattr(delta, "content") and delta.content:

@@ -109,6 +109,18 @@ class SystemState(TypedDict):
     
     产出者：Analysis Agent
     """
+
+    open_ended_detailed_responses: list[dict]
+    """
+    由 OpenEnded Agent 生成的深度开放题回答列表。
+    
+    包含内容：
+    - persona_name: 画像标签
+    - responses: 对开放题的具体深度回答 (o1, o2...)
+    
+    用途：提供给 Writer Agent 进行质性分析和引用。
+    产出者：OpenEnded Agent
+    """
     
     thesis_draft: str
     """
