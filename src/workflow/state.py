@@ -110,6 +110,16 @@ class SystemState(TypedDict):
     产出者：Analysis Agent
     """
 
+    image_insertion_guide: list[dict]
+    """
+    由 Plotting Agent 生成的插图指南。
+    
+    用于记录每张图表的用途、描述以及在正文中的建议位置，
+    帮助 Writer Agent 在撰写论文时正确引用图表。
+    
+    产出者：Plotting Agent
+    """
+
     open_ended_detailed_responses: list[dict]
     """
     由 OpenEnded Agent 生成的深度开放题回答列表。
@@ -130,6 +140,18 @@ class SystemState(TypedDict):
     
     用途：最终输出物，保存到 data/output/ 目录。
     产出者：Writer Agent
+    """
+
+    basic_stats: dict
+    """
+    基础统计学描述数据 (Demographics + Likert Dist)。
+    产出者：Analysis Agent
+    """
+
+    semantic_stats: dict
+    """
+    深度语义分析结果 (LDA Topics + ABSA + Clustering)。
+    产出者：Analysis Agent
     """
     
     error_logs: Annotated[list[str], operator.add]

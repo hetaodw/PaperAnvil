@@ -1,23 +1,152 @@
-from langchain_openai import ChatOpenAI
-from langchain_core.prompts import ChatPromptTemplate
-from src.tools.python_repl import execute_python_code
+import json
+import os
+import re
+import requests
+from openai import OpenAI
+import dashscope
+from dashscope import MultiModalConversation
+from src.workflow.state import SystemState
 
-def plotting_agent_node(state):
-    llm = ChatOpenAI(model="gpt-4o")
-    
-    prompt = ChatPromptTemplate.from_messages([
-        ("system", "你是一个数据可视化专家。根据分析结论绘制图表。"),
-        ("user", "分析结论：{analysis_insights}\n请编写 Python 代码生成图表，并保存到 data/output/ 目录。")
-    ])
-    
-    chain = prompt | llm
-    result = chain.invoke({"analysis_insights": state["analysis_insights"]})
-    
-    python_code = result.content
-    execution_result = execute_python_code(python_code)
-    
+def download_and_save_image(image_url: str, save_path: str):
+    """从 URL 下载图片并保存到本地"""
+    try:
+        response = requests.get(image_url, timeout=15)
+        response.raise_for_status()
+        with open(save_path, 'wb') as f:
+            f.write(response.content)
+        return True
+    except Exception as e:
+        print(f"❌ 下载图片失败: {e}")
+        return False
+
+def plotting_agent_node(state: SystemState) -> dict:
+    """
+    绘图智能体节点：将分析洞察转化为高质量的 AI 生成信息图表。
+    """
+    print("\n" + "="*60)
+    print("📊 [Plotting Agent] 开始根据分析洞察生成数据信息图表...")
+    print("="*60)
+
+    # 局部设置 API Key 以确保在 load_dotenv 之后执行
+    dashscope.api_key = os.getenv("DASHSCOPE_API_KEY")
+
+    analysis_insights = state.get("analysis_insights", {})
+    if not analysis_insights or "visualization_plan" not in analysis_insights:
+        print("⚠️ 未发现可视化规划 (visualization_plan)，跳过绘图阶段。")
+        return {"current_step": "plotting_agent"}
+
+    # 1. 规划阶段：使用文本大模型生成绘画提示词 (Prompt Engineering)
+    client = OpenAI(
+        api_key=os.getenv("DASHSCOPE_API_KEY", os.getenv("OPENAI_API_KEY")),
+        base_url=os.getenv("DASHSCOPE_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1"),
+    )
+    model_name = os.getenv("MODEL_NAME", "qwen-plus")
+
+    chart_design_prompt = f"""你是一个专业的数据可视化与信息图表（Infographic）提示词工程师。
+这是上游数据分析阶段提供的核心洞察与可视化规划：
+{json.dumps(analysis_insights.get('visualization_plan', []), ensure_ascii=False)}
+
+【你的任务】
+请将上述规划转化为用于调用文生图大模型（Qwen-image）的提示词。
+要求生成的图表具有高度的可读性、商业感或学术美感。
+
+提示词必须包含：
+1. 图表类型描述（如：极简 3D 柱状图、扁平化饼图、专业热力图）。
+2. 具体的文字内容：明确指示在图表中出现的标题、数值、标签（请用双引号包裹）。
+3. 视觉风格：指示配色方案（如：科技蓝、商务白）、排版重心。
+
+【输出要求】
+必须只输出合法的 JSON 对象（不包含 Markdown 包裹符），格式如下：
+{{
+  "image_prompts": [
+    {{
+      "image_id": "chart_01", 
+      "prompt": "提示词内容..."
+    }}
+  ],
+  "insertion_guide": [
+    {{
+      "image_id": "chart_01", 
+      "description": "对图表的简短描述", 
+      "context": "此图表应放置在关于 X 的讨论之后"
+    }}
+  ]
+}}"""
+
+    try:
+        response_1 = client.chat.completions.create(
+            model=model_name,
+            messages=[{"role": "system", "content": chart_design_prompt}],
+            temperature=0.7
+        )
+        content = response_1.choices[0].message.content.strip()
+        print(f">>> LLM 设计方案原始输出: {content[:200]}...")
+        
+        # 增强型 JSON 提取 (支持 Markdown 或 杂质)
+        json_match = re.search(r'(\{.*\}|\[.*\])', content, re.DOTALL)
+        if json_match:
+            content = json_match.group(1)
+        
+        design_plan = json.loads(content)
+        image_prompts = design_plan.get("image_prompts", [])
+        insertion_guide = design_plan.get("insertion_guide", [])
+    except Exception as e:
+        error_msg = f"[Plotting Agent] 图表设计规划失败: {str(e)}"
+        print(f"❌ {error_msg}")
+        return {"error_logs": [error_msg], "current_step": "error"}
+
+    # 2. 生成阶段：调用 Qwen-Image 2.0 实际绘图
+    output_dir = "data/output/images"
+    os.makedirs(output_dir, exist_ok=True)
+    generated_images = []
+    final_insertion_guide = []
+
+    for item in image_prompts:
+        img_id = item["image_id"]
+        prompt_text = item["prompt"]
+        print(f"   -> 正在生成图表 {img_id}...")
+
+        try:
+            # 调用百炼 MultiModal API
+            response = MultiModalConversation.call(
+                api_key=dashscope.api_key,
+                model="qwen-image-2.0",
+                messages=[{"role": "user", "content": [{"text": prompt_text}]}],
+                result_format='message'
+            )
+            
+            if response.status_code == 200:
+                response_content = response.output.choices[0].message.content
+                # 提取图片 URL
+                image_url = next((c['image'] for c in response_content if 'image' in c), None)
+                
+                if image_url:
+                    save_path = os.path.join(output_dir, f"{img_id}.png")
+                    if download_and_save_image(image_url, save_path):
+                        local_rel_path = f"data/output/images/{img_id}.png"
+                        generated_images.append(local_rel_path)
+                        
+                        # 更新插图指南中的路径
+                        for guide in insertion_guide:
+                            if guide["image_id"] == img_id:
+                                guide["local_path"] = local_rel_path
+                                final_insertion_guide.append(guide)
+                        print(f"      ✅ 图表已保存为: {save_path}")
+            else:
+                print(f"      ❌ 绘图失败: {response.code} - {response.message}")
+        except Exception as e:
+            print(f"      ❌ 绘图 API 异常: {e}")
+
+    # 3. 存档插图指南 (供 Writer Agent 使用)
+    if final_insertion_guide:
+        guide_path = os.path.join("data/processed", "chart_insertion_guide.json")
+        os.makedirs("data/processed", exist_ok=True)
+        with open(guide_path, 'w', encoding='utf-8') as f:
+            json.dump(final_insertion_guide, f, ensure_ascii=False, indent=2)
+        print(f"✅ 插图指南已保存至: {guide_path}")
+
     return {
-        **state,
-        "plot_image_paths": execution_result.get("image_paths", []),
+        "plot_image_paths": generated_images,
+        "image_insertion_guide": final_insertion_guide,
         "current_step": "plotting_agent"
     }
