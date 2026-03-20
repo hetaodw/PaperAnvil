@@ -2,6 +2,22 @@ import operator
 from typing import TypedDict, Annotated
 
 
+def reduce_step(left: str, right: str) -> str:
+    """处理并发更新时的 state 覆盖逻辑，默认采用后者，如果是多个并发则拼接（简单起见直接拼接或覆盖）。
+    这里如果既有 left 又有 right，为了展示并发，可以拼接。或直接 return right。
+    我们直接 return right 以覆盖。"""
+    if left is None:
+        return right
+    if right is None:
+        return left
+    # 如果原本就是 right，无视
+    if left == right:
+        return right
+    # 针对 fork 这种并发，如果是同一轮更新，可能会拼接
+    if left and right and left != "START" and "error" not in right:
+        return f"{left} & {right}"
+    return right
+
 class SystemState(TypedDict):
     """
     多智能体协作的全局状态字典。
@@ -28,6 +44,14 @@ class SystemState(TypedDict):
     示例：用户中心模块认证流程分析
     
     用途：指导所有 Agent 的工作方向和内容生成。
+    产出者：main.py 初始化时传入
+    """
+    
+    persona_count: int
+    """
+    计划生成的用户画像总数。
+    
+    用途：控制 Persona Agent 生成的画像数量及 Data Expansion的比例分配。
     产出者：main.py 初始化时传入
     """
     
@@ -168,7 +192,7 @@ class SystemState(TypedDict):
     产出者：所有 Agent（遇到错误时追加）
     """
     
-    current_step: str
+    current_step: Annotated[str, reduce_step]
     """
     当前执行到的节点名称。
     
@@ -185,4 +209,10 @@ class SystemState(TypedDict):
     
     用途：追踪工作流执行进度，支持断点续传。
     产出者：每个 Agent 执行时更新
+    """
+    
+    prompts: dict
+    """
+    各个核心智能体的提示词模版。
+    如果在此处设置了对应 Agent/场景 的键值，Agent 将优先使用该模版。
     """

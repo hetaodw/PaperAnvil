@@ -26,7 +26,7 @@ def open_ended_node(state: SystemState) -> dict:
 
         client = OpenAI(
             api_key=os.getenv("DASHSCOPE_API_KEY"),
-            base_url=os.getenv("DASHSCOPE_BASE_URL"),
+            base_url=os.getenv("DASHSCOPE_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1"),
         )
         
         all_responses = []
@@ -37,50 +37,21 @@ def open_ended_node(state: SystemState) -> dict:
             
             # 修正逻辑：遵循调查实质，占比越高的人群生成更多份数
             # 基础规则：常见 (>20%) -> 8-10份, 普通 (5-20%) -> 3-5份, 稀有 (<5%) -> 1-2份
-            if proportion > 0.20:
-                n_copies = 10
-            elif proportion > 0.05:
-                n_copies = 5
-            else:
-                n_copies = 2
+            # 测试阶段，只生成 1 份
+            n_copies = 1
                 
             print(f"\n>>> 正在为画像 [{name}] 生成 {n_copies} 份深度开放题回答 (占比: {proportion:.2%})...")
             
             for i in range(n_copies):
                 print(f"  - 正在生成第 {i+1}/{n_copies} 份...")
                 
-                system_prompt = f"""你是一位拥有深厚心理学背景的“沉浸式角色扮演专家”。你擅长完全进入给定的人格画像（Persona），并针对调研问卷中的开放性问题，提供极具真实感、细节丰富且带有强烈个人情绪色彩的深度回答。
-
-# Persona Info
-- 姓名标签: {name}
-- 年龄: {persona.get('age', '未知')}
-- 职业: {persona.get('job', '未知')}
-- 性格特点: {persona.get('personality', '未知')}
-- 居住地: {persona.get('location', '未知')}
-
-# Task
-请根据提供的人设信息和问卷题目，以该角色的第一人称口吻进行回答。
-
-# Questionnaire (Open-ended only)
-{json.dumps(open_questions, ensure_ascii=False, indent=2)}
-
-# Constraints
-1. **字数要求**：每个问题的回答必须在 150 - 250 字之间。严禁空话套话，必须通过细节描写来填充篇幅。
-2. **人设一致性**：回答必须严格符合该角色的职业背景、年龄、性格特征及地理位置。
-3. **细节注入**：
-   - 必须提到一个具体的**使用场景**（如：在信号不佳的地铁、在忙碌的生产车间、在光线刺眼的户外）。
-   - 必须提到一个具体的**操作痛点**（如：某个按钮难以点击、某个页面跳转掉帧、某个报错信息看不懂）。
-   - 必须表达一种具体的**情绪**（如：焦虑、愤怒、无助、或偶尔的惊喜）。
-4. **输出格式**：只输出合法的 JSON 对象，不包含 Markdown 代码块。
-
-# Output Format
-{{
-  "persona_name": "{name}",
-  "responses": {{
-    "o1": "深度回答内容...",
-    "o2": "深度回答内容..."
-  }}
-}}"""
+                prompt_template = state.get("prompts", {}).get("open_ended_system_prompt", "")
+                if not prompt_template: prompt_template = "你是 {name}，请沉浸回答。"
+                system_prompt = prompt_template.format(
+                    name=name, age=persona.get('age', '未知'), job=persona.get('job', '未知'),
+                    personality=persona.get('personality', '未知'), location=persona.get('location', '未知'),
+                    open_questions_json=json.dumps(open_questions, ensure_ascii=False, indent=2)
+                )
 
                 messages = [
                     {"role": "system", "content": system_prompt},
@@ -91,10 +62,16 @@ def open_ended_node(state: SystemState) -> dict:
                     completion = client.chat.completions.create(
                         model=os.getenv("MODEL_NAME", "qwen3.5-plus"),
                         messages=messages,
-                        extra_body={"enable_thinking": True} # 开放题需要深度思考以满足细节要求
+                        extra_body={"enable_thinking": False} # 开放题暂时关闭思维链
                     )
                     
-                    content = completion.choices[0].message.content.strip()
+                    msg = completion.choices[0].message
+                    if hasattr(msg, 'reasoning_content') and msg.reasoning_content:
+                        print(f"\n[OpenEnded Agent - {name} 思维链]\n{msg.reasoning_content}\n")
+                    
+                    content = msg.content.strip()
+                    print(f"\n[OpenEnded Agent - {name} LLM 输出]\n{content}\n")
+                    
                     clean_json_str = re.sub(r'^```json\s*|\s*```$', '', content, flags=re.MULTILINE).strip()
                     
                     resp_json = json.loads(clean_json_str)

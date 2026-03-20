@@ -41,6 +41,8 @@ class SemanticTool:
         print(f">>> 正在进行主题建模 (目标主题数: {n_topics})...")
         if not self.texts:
             return
+        
+        n_topics = min(n_topics, len(self.texts))
             
         vectorizer = CountVectorizer(max_df=0.95, min_df=1, stop_words=None) # 中文通常需要分词，此处简化处理或假设已分词
         tf = vectorizer.fit_transform(self.texts)
@@ -117,7 +119,7 @@ class SemanticTool:
             dashscope.api_key = os.getenv("DASHSCOPE_API_KEY")
             
             # 为了效率，可以尝试 batch 处理（dashscope 支持 list input）
-            batch_size = 25
+            batch_size = 10
             for i in range(0, min(len(self.texts), 100), batch_size): # 限制前 100 条
                 batch_input = self.texts[i : i + batch_size]
                 resp = dashscope.TextEmbedding.call(
@@ -138,7 +140,7 @@ class SemanticTool:
 
         # 2. K-Means 聚类
         if embeddings:
-            n_clusters = 5
+            n_clusters = min(5, len(embeddings))
             kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
             clusters = kmeans.fit_predict(embeddings)
             

@@ -27,7 +27,7 @@ def persona_node(state: SystemState) -> dict:
         
         client = OpenAI(
             api_key=os.getenv("DASHSCOPE_API_KEY"),
-            base_url=os.getenv("DASHSCOPE_BASE_URL"),
+            base_url=os.getenv("DASHSCOPE_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1"),
         )
         
         demographics_info = ""
@@ -60,32 +60,15 @@ def persona_node(state: SystemState) -> dict:
                 existing_names = [p.get("name_tag", "未知") for p in all_personas]
                 existing_context = f"\n\n【已存在的画像姓名/标签】: {', '.join(existing_names)}\n请确保新生成的画像在职业、性格、痛点和人口统计特征上与上述已有画像有显著差异，避免重复。"
             
-            system_prompt = f"""你是一位融合了心理学、社会学与大数据建模能力的资深画像架构师。
-你的任务是根据调研主题和问卷，设计出极其鲜活、具有'数字孪生'真实感的人物画像。
-
-【调研主题】
-{topic}
-
-【问卷结构】
-{demographics_info}
-{likert_info}
-{open_ended_info}{existing_context}
-
-【每个画像必须包含以下字段】
-- name_tag: 姓名风格+标签（如：后端开发-王强）
-- gender: 性别（男/女）
-- age: 具体年龄（整数）
-- job: 具体职业（如：中关村大厂程序员、退休教师等）
-- personality: 详细性格描述（如：对系统卡顿极度焦虑、追求极致效率、技术保守派等）
-- location: 具体的居住城市及区域（如：北京海淀、上海徐汇）
-- proportion: 该类人群在 5000 条样本中的原始预计权重（后续会自动归一化）
-- demographics_fixed: 必须匹配问卷中 demographics 的 id，并从对应的 options 中选择一个符合该人设的文本
-- likert_distribution: 针对问卷中每个李克特量表题 id，设定其得分均值 mu (1.0-5.0) 和标准差 sigma (0.3-0.9)
-- open_ended_samples: 针对问卷中的开放题 id，以该人物的口吻提供 2 条极其写实、带有性格色彩的口语化回答
-
-【输出强制要求】
-只输出合法的 JSON 对象，不包含 Markdown 代码块。
-JSON 结构：{{"personas": [{{画像1}}, {{画像2}}, ... ]}}"""
+            prompt_template = state.get("prompts", {}).get("persona_system_prompt", "")
+            if not prompt_template: prompt_template = "请为人设 {topic} 生成画像。"
+            system_prompt = prompt_template.format(
+                topic=topic,
+                demographics_info=demographics_info,
+                likert_info=likert_info,
+                open_ended_info=open_ended_info,
+                existing_context=existing_context
+            )
             
             # 使用稍高的温度以增加随机性和多样性
             temperature = 0.8 + (batch_num * 0.05) 
@@ -93,26 +76,33 @@ JSON 结构：{{"personas": [{{画像1}}, {{画像2}}, ... ]}}"""
             
             messages = [
                 {"role": "system", "content": system_prompt},
-                {"role": "user", "content": f"请生成 {current_batch_size} 个全新的、具有差异化的用户画像。"}
+                {"role": "user", "content": f"请生成 {current_batch_size} 个全新的、具有差异化的中国本地居民用户画像。"}
             ]
             
             completion = client.chat.completions.create(
                 model=os.getenv("MODEL_NAME", "qwen3.5-plus"),
                 messages=messages,
                 temperature=temperature,
-                extra_body={"enable_thinking": True},
+                extra_body={"enable_thinking": False},
                 stream=True
             )
             
             is_answering = False
             answer_content = ""
+            reasoning_content = ""
             
             for chunk in completion:
                 delta = chunk.choices[0].delta
+                if hasattr(delta, "reasoning_content") and delta.reasoning_content:
+                    reasoning_content += delta.reasoning_content
                 if hasattr(delta, "content") and delta.content:
                     if not is_answering:
                         is_answering = True
                     answer_content += delta.content
+            
+            if reasoning_content:
+                print(f"\n[Persona Agent - 批次 {batch_num} 思维链]\n{reasoning_content}\n")
+            print(f"\n[Persona Agent - 批次 {batch_num} LLM 输出]\n{answer_content}\n")
             
             batch_json = json.loads(answer_content.strip())
             if "personas" in batch_json:

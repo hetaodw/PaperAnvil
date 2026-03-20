@@ -30,6 +30,17 @@ def data_expansion_node(state: SystemState) -> dict:
         result = expand_data(personas, raw_data_path, total_samples=total_samples)
         
         if result["success"]:
+            # 【新整合】将 CSV 转换为用户友好的 Excel 格式 (csv_to_xlsx)
+            from src.tools.csv_to_xlsx import convert_csv_to_xlsx
+            output_xlsx_path = "data/output/final_survey_results.xlsx"
+            q_file = "data/intermediate/questionnaire.json"
+            
+            # 尝试执行转换，但不阻塞主流程（即使转换失败也返回 CSV 路径）
+            try:
+                convert_csv_to_xlsx(raw_data_path, q_file, output_xlsx_path)
+            except Exception as ex:
+                print(f"[Data Expansion] Excel 转换失败但跳过: {ex}")
+
             return {
                 "raw_data_path": raw_data_path,
                 "current_step": "data_expansion"

@@ -26,23 +26,15 @@ def survey_node(state: SystemState) -> dict:
         topic = state["topic"]
         client = OpenAI(
             api_key=os.getenv("DASHSCOPE_API_KEY"),
-            base_url=os.getenv("DASHSCOPE_BASE_URL"),
+            base_url=os.getenv("DASHSCOPE_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1"),
         )
         
         # --- 第一阶段：基础与前 10 题 ---
         print("\n>>> 正在进行第一阶段问卷生成 (标题、人口统计、L1-L10)...")
-        prompt_1 = f"""你是一位资深的社会学研究员。请针对主题“{topic}”设计问卷的第一部分。
-要求包含：
-1. 问卷标题。
-2. 3-5 道人口统计题 (id: d1, d2...)。
-3. 前 10 道李克特量表题 (id: l1 到 l10，1-5分，1为极差/极不满意，5为极好/极其满意)。
-
-只输出 JSON，格式如下：
-{{
-  "survey_title": "...",
-  "demographics": [{{ "id": "d1", "question": "...", "options": [...] }}],
-  "likert_scales": [{{ "id": "l1", "question": "...", "scale_range": [1, 5], "labels": {{ "1": "极差", "5": "极好" }} }}]
-}}"""
+        prompt_template_1 = state.get("prompts", {}).get("survey_phase1_prompt", "")
+        if not prompt_template_1:
+            prompt_template_1 = f"你一位资深研究员。请为 {topic} 设计问卷第一部分。" # Fallback (shouldn't be reached)
+        prompt_1 = prompt_template_1.format(topic=topic)
         
         response_1 = client.chat.completions.create(
             model=os.getenv("MODEL_NAME", "qwen3.5-plus"),
@@ -50,28 +42,30 @@ def survey_node(state: SystemState) -> dict:
             extra_body={"enable_thinking": True}
         )
         
+        msg_1 = response_1.choices[0].message
+        if hasattr(msg_1, 'reasoning_content') and msg_1.reasoning_content:
+            print(f"\n[Survey Agent - Phase 1 思维链]\n{msg_1.reasoning_content}\n")
+        print(f"\n[Survey Agent - Phase 1 LLM 输出]\n{msg_1.content}\n")
+        
         json_1 = json.loads(_clean_json_string(response_1.choices[0].message.content))
         
         # --- 第二阶段：后 10 题与开放题 ---
         print(">>> 正在进行第二阶段问卷生成 (L11-L20、开放题)...")
         context_1 = json.dumps(json_1.get("likert_scales", []), ensure_ascii=False)
-        prompt_2 = f"""你已经生成了以下 10 道题目：{context_1}。
-现在请继续针对主题“{topic}”生成问卷的第二部分。
-要求包含：
-1. 另外 10 道互不重复的李克特量表题 (id: l11 到 l20，保持 l11, l12... 的顺序)。
-2. 2 道开放性问题 (id: o1, o2)。
-
-只输出 JSON，格式如下：
-{{
-  "likert_scales": [{{ "id": "l11", "question": "...", "scale_range": [1, 5], "labels": {{ "1": "极差", "5": "极好" }} }}],
-  "open_ended": [{{ "id": "o1", "question": "..." }}]
-}}"""
+        prompt_template_2 = state.get("prompts", {}).get("survey_phase2_prompt", "")
+        if not prompt_template_2: prompt_template_2 = f"请针对 {topic} 生成第二部分问卷。"
+        prompt_2 = prompt_template_2.format(context_1=context_1, topic=topic)
 
         response_2 = client.chat.completions.create(
             model=os.getenv("MODEL_NAME", "qwen3.5-plus"),
             messages=[{"role": "user", "content": prompt_2}],
-            extra_body={"enable_thinking": True}
+            extra_body={"enable_thinking": False}
         )
+        
+        msg_2 = response_2.choices[0].message
+        if hasattr(msg_2, 'reasoning_content') and msg_2.reasoning_content:
+            print(f"\n[Survey Agent - Phase 2 思维链]\n{msg_2.reasoning_content}\n")
+        print(f"\n[Survey Agent - Phase 2 LLM 输出]\n{msg_2.content}\n")
         
         json_2 = json.loads(_clean_json_string(response_2.choices[0].message.content))
         

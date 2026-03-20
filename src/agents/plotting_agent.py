@@ -42,36 +42,11 @@ def plotting_agent_node(state: SystemState) -> dict:
     )
     model_name = os.getenv("MODEL_NAME", "qwen-plus")
 
-    chart_design_prompt = f"""你是一个专业的数据可视化与信息图表（Infographic）提示词工程师。
-这是上游数据分析阶段提供的核心洞察与可视化规划：
-{json.dumps(analysis_insights.get('visualization_plan', []), ensure_ascii=False)}
-
-【你的任务】
-请将上述规划转化为用于调用文生图大模型（Qwen-image）的提示词。
-要求生成的图表具有高度的可读性、商业感或学术美感。
-
-提示词必须包含：
-1. 图表类型描述（如：极简 3D 柱状图、扁平化饼图、专业热力图）。
-2. 具体的文字内容：明确指示在图表中出现的标题、数值、标签（请用双引号包裹）。
-3. 视觉风格：指示配色方案（如：科技蓝、商务白）、排版重心。
-
-【输出要求】
-必须只输出合法的 JSON 对象（不包含 Markdown 包裹符），格式如下：
-{{
-  "image_prompts": [
-    {{
-      "image_id": "chart_01", 
-      "prompt": "提示词内容..."
-    }}
-  ],
-  "insertion_guide": [
-    {{
-      "image_id": "chart_01", 
-      "description": "对图表的简短描述", 
-      "context": "此图表应放置在关于 X 的讨论之后"
-    }}
-  ]
-}}"""
+    prompt_template = state.get("prompts", {}).get("plotting_chart_design_prompt", "")
+    if not prompt_template: prompt_template = "生成图表提示词：{visualization_plan_json}"
+    chart_design_prompt = prompt_template.format(
+        visualization_plan_json=json.dumps(analysis_insights.get('visualization_plan', []), ensure_ascii=False)
+    )
 
     try:
         response_1 = client.chat.completions.create(
@@ -79,8 +54,12 @@ def plotting_agent_node(state: SystemState) -> dict:
             messages=[{"role": "system", "content": chart_design_prompt}],
             temperature=0.7
         )
-        content = response_1.choices[0].message.content.strip()
-        print(f">>> LLM 设计方案原始输出: {content[:200]}...")
+        msg_1 = response_1.choices[0].message
+        if hasattr(msg_1, 'reasoning_content') and msg_1.reasoning_content:
+            print(f"\n[Plotting Agent - 图表规划 思维链]\n{msg_1.reasoning_content}\n")
+        
+        content = msg_1.content.strip()
+        print(f"\n[Plotting Agent - 图表规划 LLM 输出]\n{content}\n")
         
         # 增强型 JSON 提取 (支持 Markdown 或 杂质)
         json_match = re.search(r'(\{.*\}|\[.*\])', content, re.DOTALL)

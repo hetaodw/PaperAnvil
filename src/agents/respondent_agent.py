@@ -34,7 +34,7 @@ def respondent_node(state: SystemState) -> dict:
 
         client = OpenAI(
             api_key=os.getenv("DASHSCOPE_API_KEY"),
-            base_url=os.getenv("DASHSCOPE_BASE_URL"),
+            base_url=os.getenv("DASHSCOPE_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1"),
         )
         
         all_seeds = []
@@ -60,35 +60,12 @@ def respondent_node(state: SystemState) -> dict:
             
             print(f"\n>>> 正在为画像 [{name}] 生成回答...")
             
-            system_prompt = f"""你现在是：{name}。
-年龄：{age}
-职业：{job}
-性格：{personality}
-居住地：{location}
-
-你的任务：
-请完全沉浸在该人设中，诚实地根据你的性格和背景回答这份问卷。
-
-【问卷内容】
-{survey_context}
-
-【回答要求】
-1. 必须输出合法的 JSON 格式。
-2. 李克特量表题 (likert_scales): 针对每个 id，给出 1-5 之间的整数分。
-3. 开放性问题 (open_ended): 针对每个 id，以该角色的口吻写一段 30-50 字的写实回答。
-4. 人口统计题 (demographics): 如果问卷中有，请根据你的人设选择合适的选项。
-
-【输出格式示例】
-{{
-  "responses": {{
-    "l1": 4,
-    "l2": 2,
-    "o1": "具体回答...",
-    "d1": "选项文本"
-  }}
-}}
-
-注意：只输出 JSON 对象，不要包含任何 Markdown 格式的包裹符号（如 ```json）。"""
+            prompt_template = state.get("prompts", {}).get("respondent_system_prompt", "")
+            if not prompt_template: prompt_template = "你是 {name}，请诚实回答。"
+            system_prompt = prompt_template.format(
+                name=name, age=age, job=job, personality=personality, 
+                location=location, survey_context=survey_context
+            )
 
             messages = [
                 {"role": "system", "content": system_prompt},
@@ -102,7 +79,12 @@ def respondent_node(state: SystemState) -> dict:
                 stream=False
             )
             
-            answer_content = completion.choices[0].message.content.strip()
+            msg_respondent = completion.choices[0].message
+            if hasattr(msg_respondent, 'reasoning_content') and msg_respondent.reasoning_content:
+                print(f"\n[Respondent Agent - {name} 思维链]\n{msg_respondent.reasoning_content}\n")
+            
+            answer_content = msg_respondent.content.strip()
+            print(f"\n[Respondent Agent - {name} LLM 输出]\n{answer_content}\n")
             
             # 清洗 Markdown 标签
             clean_json_str = re.sub(r'^```json\s*|\s*```$', '', answer_content, flags=re.MULTILINE).strip()
