@@ -47,6 +47,16 @@ class SystemState(TypedDict):
     产出者：main.py 初始化时传入
     """
     
+    input_text: str
+    """
+    用户填写的原始问卷文本。
+    """
+    
+    bypass_survey_agent: bool
+    """
+    是否跳过 Survey Agent，直接进入 Text to Survey Agent。
+    """
+    
     persona_count: int
     """
     计划生成的用户画像总数。
@@ -100,7 +110,25 @@ class SystemState(TypedDict):
     格式：data/raw_data/simulated_data.csv
     
     用途：提供给 Analysis Agent 进行数据分析和挖掘。
-    产出者：Data Expansion 工具
+    产出者：Data Expansion 工具 或 用户直接提供
+    """
+    
+    use_existing_csv: bool
+    """
+    是否使用用户提供的已有 CSV 文件，跳过数据生成步骤。
+    
+    用途：允许用户使用自己的数据进行分析。
+    产出者：main.py 初始化时传入
+    """
+    
+    existing_csv_path: str
+    """
+    用户提供的已有 CSV 文件路径。
+    
+    格式：绝对路径或相对路径
+    
+    用途：当 use_existing_csv=True 时，直接使用此文件进行分析。
+    产出者：main.py 初始化时传入
     """
     
     plot_image_paths: Annotated[list[str], operator.add]

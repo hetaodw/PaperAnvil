@@ -24,8 +24,8 @@ def data_expansion_node(state: SystemState) -> dict:
         # 设置输出路径
         raw_data_path = "data/raw_data/simulated_data.csv"
         
-        # 默认生成 5000 条
-        total_samples = 5000
+        # 默认生成 2000 条
+        total_samples = 2000
         
         result = expand_data(personas, raw_data_path, total_samples=total_samples)
         

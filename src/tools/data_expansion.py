@@ -64,8 +64,37 @@ def expand_data(personas: List[Dict[str, Any]], output_csv_path: str, total_samp
         # 转换为 DataFrame 并保存
         df = pd.DataFrame(all_data)
         
+        # 检查并填充缺失的列（防止 NaN）
+        all_likert_keys = set()
+        all_demo_keys = set()
+        for p in personas:
+            all_likert_keys.update(p.get("likert_distribution", {}).keys())
+            all_demo_keys.update(p.get("demographics_fixed", {}).keys())
+        
+        # 填充缺失的李克特题（用中位数 3）
+        for key in all_likert_keys:
+            if key not in df.columns:
+                df[key] = 3
+                print(f"⚠️ 检测到缺失列 {key}，已填充默认值 3")
+        
+        # 填充缺失的人口统计题（用 "未知"）
+        for key in all_demo_keys:
+            if key not in df.columns:
+                df[key] = "未知"
+                print(f"⚠️ 检测到缺失列 {key}，已填充默认值 '未知'")
+        
         # 随机打乱数据顺序，增加真实感
         df = df.sample(frac=1).reset_index(drop=True)
+        
+        # 最终检查：确保没有 NaN
+        if df.isnull().any().any():
+            print("⚠️ 检测到 NaN 值，正在处理...")
+            # 数值列用均值填充
+            numeric_cols = df.select_dtypes(include=[np.number]).columns
+            df[numeric_cols] = df[numeric_cols].fillna(df[numeric_cols].mean())
+            # 字符串列用 "未知" 填充
+            string_cols = df.select_dtypes(include=['object']).columns
+            df[string_cols] = df[string_cols].fillna("未知")
         
         df.to_csv(output_csv_path, index=False, encoding='utf-8-sig')
         

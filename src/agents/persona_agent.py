@@ -6,13 +6,41 @@ from src.workflow.state import SystemState
 
 load_dotenv()
 
+CHECKPOINT_FILE = "data/intermediate/persona_checkpoint.json"
+
+
+def save_checkpoint(personas: list, batch_num: int, target_count: int):
+    checkpoint = {
+        "personas": personas,
+        "batch_num": batch_num,
+        "target_count": target_count
+    }
+    os.makedirs(os.path.dirname(CHECKPOINT_FILE), exist_ok=True)
+    with open(CHECKPOINT_FILE, 'w', encoding='utf-8') as f:
+        json.dump(checkpoint, f, ensure_ascii=False, indent=2)
+    print(f"💾 断点已保存: 已生成 {len(personas)} 个画像 (第 {batch_num} 批)")
+
+
+def load_checkpoint():
+    if os.path.exists(CHECKPOINT_FILE):
+        with open(CHECKPOINT_FILE, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    return None
+
+
+def clear_checkpoint():
+    if os.path.exists(CHECKPOINT_FILE):
+        os.remove(CHECKPOINT_FILE)
+        print("🗑️ 断点文件已清除")
+
 
 def persona_node(state: SystemState) -> dict:
     """
-    用户画像生成节点（分批循环生成模式）。
+    用户画像生成节点（分批循环生成模式，支持断点续传）。
     
     根据调研主题和问卷，设计该问卷可能调查的人物真实感的人物画像。
     为了防止长文本截断并提高多样性，采用分批（每批最多 3 个）生成的方式。
+    支持 JSON 解析失败时保存断点，下次可从断点继续。
     
     Args:
         state: 全局状态字典，包含调研主题、问卷、画像数量等信息
@@ -24,6 +52,7 @@ def persona_node(state: SystemState) -> dict:
         topic = state["topic"]
         questionnaire = state["questionnaire"]
         persona_count = state.get("persona_count", 3)
+        resume_from_checkpoint = state.get("resume_persona_checkpoint", False)
         
         client = OpenAI(
             api_key=os.getenv("DASHSCOPE_API_KEY"),
@@ -47,10 +76,20 @@ def persona_node(state: SystemState) -> dict:
         
         all_personas = []
         batch_size = 3
+        start_batch = 0
+        
+        checkpoint = load_checkpoint()
+        if resume_from_checkpoint and checkpoint:
+            all_personas = checkpoint.get("personas", [])
+            start_batch = checkpoint.get("batch_num", 0)
+            saved_target = checkpoint.get("target_count", persona_count)
+            print(f"\n🔄 从断点恢复: 已有 {len(all_personas)} 个画像，从第 {start_batch + 1} 批继续")
+            if saved_target != persona_count:
+                print(f"⚠️ 注意: 断点目标数 ({saved_target}) 与当前目标数 ({persona_count}) 不同")
         
         print(f"\n>>> 计划生成总画像数: {persona_count}，采用分批模式（每批 {batch_size} 个）")
         
-        for batch_start in range(0, persona_count, batch_size):
+        for batch_start in range(start_batch * batch_size, persona_count, batch_size):
             current_batch_size = min(batch_size, persona_count - batch_start)
             batch_num = (batch_start // batch_size) + 1
             print(f"\n--- 正在生成第 {batch_num} 批画像 ({batch_start + 1}-{min(batch_start + current_batch_size, persona_count)}) ---")
@@ -70,7 +109,6 @@ def persona_node(state: SystemState) -> dict:
                 existing_context=existing_context
             )
             
-            # 使用稍高的温度以增加随机性和多样性
             temperature = 0.8 + (batch_num * 0.05) 
             if temperature > 1.2: temperature = 1.2
             
@@ -104,12 +142,18 @@ def persona_node(state: SystemState) -> dict:
                 print(f"\n[Persona Agent - 批次 {batch_num} 思维链]\n{reasoning_content}\n")
             print(f"\n[Persona Agent - 批次 {batch_num} LLM 输出]\n{answer_content}\n")
             
-            batch_json = json.loads(answer_content.strip())
-            if "personas" in batch_json:
-                all_personas.extend(batch_json["personas"])
-                print(f"✅ 第 {batch_num} 批生成成功，当前累计: {len(all_personas)}")
+            try:
+                batch_json = json.loads(answer_content.strip())
+                if "personas" in batch_json:
+                    all_personas.extend(batch_json["personas"])
+                    print(f"✅ 第 {batch_num} 批生成成功，当前累计: {len(all_personas)}")
+                    save_checkpoint(all_personas, batch_num, persona_count)
+            except json.JSONDecodeError as e:
+                print(f"⚠️ 第 {batch_num} 批 JSON 解析失败: {e}")
+                print(f"💾 已保存当前进度 ({len(all_personas)} 个画像) 到断点文件")
+                save_checkpoint(all_personas, batch_num, persona_count)
+                raise
 
-        # 全局归一化处理
         if all_personas:
             total_proportion = sum(p.get("proportion", 0) for p in all_personas)
             if total_proportion == 0:
@@ -121,7 +165,6 @@ def persona_node(state: SystemState) -> dict:
             
             print(f"\n✅ 所有 {len(all_personas)} 个画像已完成归一化。")
 
-        # 保存结果
         final_output = {"personas": all_personas}
         intermediate_dir = "data/intermediate"
         os.makedirs(intermediate_dir, exist_ok=True)
@@ -129,6 +172,8 @@ def persona_node(state: SystemState) -> dict:
         
         with open(personas_path, 'w', encoding='utf-8') as f:
             json.dump(final_output, f, ensure_ascii=False, indent=2)
+        
+        clear_checkpoint()
         
         return {
             "personas": all_personas,
@@ -138,6 +183,7 @@ def persona_node(state: SystemState) -> dict:
     except json.JSONDecodeError as e:
         error_msg = f"[Persona Agent] JSON 解析失败: {str(e)}"
         print(error_msg)
+        print("💡 提示: 可设置 resume_persona_checkpoint=True 从断点继续")
         return {"error_logs": [error_msg], "current_step": "error"}
     except Exception as e:
         error_msg = f"[Persona Agent] 运行失败: {str(e)}"

@@ -25,7 +25,14 @@ class StateTool:
         
     def _prepare_numeric_data(self):
         """仅提取数值型的李克特量表数据用于聚类和异常检测"""
-        return self.df[self.likert_cols].copy()
+        data = self.df[self.likert_cols].copy()
+        
+        # 处理 NaN 值：用列均值填充
+        if data.isnull().any().any():
+            print("⚠️ 检测到 NaN 值，正在用均值填充...")
+            data = data.fillna(data.mean())
+        
+        return data
 
     def analyze_clustering(self):
         """多算法聚类：K-Means 和 DBSCAN"""
@@ -76,6 +83,12 @@ class StateTool:
             le = LabelEncoder()
             df_encoded[col] = le.fit_transform(df_encoded[col].astype(str))
             
+        # 处理 NaN 值
+        if df_encoded[self.likert_cols + self.demographic_cols].isnull().any().any():
+            print("⚠️ 相关性分析中检测到 NaN 值，正在用均值填充...")
+            for col in self.likert_cols:
+                df_encoded[col] = df_encoded[col].fillna(df_encoded[col].mean())
+            
         # 计算完整相关矩阵
         all_cols = self.likert_cols + self.demographic_cols
         corr_matrix = df_encoded[all_cols].corr()
@@ -117,6 +130,11 @@ class StateTool:
         for col in self.demographic_cols:
             le = LabelEncoder()
             df_encoded[col] = le.fit_transform(df_encoded[col].astype(str))
+        
+        # 处理 NaN 值
+        for col in features + [target]:
+            if df_encoded[col].isnull().any():
+                df_encoded[col] = df_encoded[col].fillna(df_encoded[col].mean())
             
         X = df_encoded[features]
         y = df_encoded[target]

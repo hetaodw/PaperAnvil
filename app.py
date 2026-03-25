@@ -12,6 +12,7 @@ from langgraph.graph import StateGraph, START, END
 # Project imports
 from src.workflow.state import SystemState
 from src.agents.survey_agent import survey_node
+from src.agents.text_to_survey_agent import text_to_survey_node
 from src.agents.survey_ui_agent import survey_ui_node
 from src.agents.persona_agent import persona_node
 from src.agents.respondent_agent import respondent_node
@@ -20,6 +21,7 @@ from src.agents.open_ended_agent import open_ended_node
 from src.agents.analysis_agent import analysis_agent_node
 from src.agents.plotting_agent import plotting_agent_node
 from src.agents.writer_agent import writer_agent_node
+from src.agents.exporter_agent import exporter_node
 
 # 加载环境变量
 load_dotenv()
@@ -50,6 +52,12 @@ def should_continue(state: SystemState) -> str:
         return "error"
     return "continue"
 
+def route_entry(state: SystemState) -> str:
+    """根据是否提供文本，选择问卷生成节点"""
+    if state.get("bypass_survey_agent") and state.get("input_text"):
+        return "text_to_survey_agent"
+    return "survey_agent"
+
 def pass_through(state: SystemState) -> dict:
     """空节点，用于 Fork 和 Join 路由锚点"""
     return {}
@@ -62,6 +70,7 @@ def create_workflow():
     
     # 2. 添加所有节点 (增加显式的 fork 和 join 去更好地管控并行)
     workflow.add_node("survey_agent", survey_node)
+    workflow.add_node("text_to_survey_agent", text_to_survey_node)
     workflow.add_node("survey_ui_agent", survey_ui_node)
     workflow.add_node("persona_agent", persona_node)
     workflow.add_node("respondent_agent", respondent_node)
@@ -74,9 +83,11 @@ def create_workflow():
     workflow.add_node("analysis_agent", analysis_agent_node)
     workflow.add_node("plotting_agent", plotting_agent_node)
     workflow.add_node("writer_agent", writer_agent_node)
+    workflow.add_node("exporter_agent", exporter_node)
     
     # 3. 设置边和流程
-    workflow.add_edge(START, "survey_agent")
+    workflow.add_conditional_edges(START, route_entry, {"text_to_survey_agent": "text_to_survey_agent", "survey_agent": "survey_agent"})
+    workflow.add_conditional_edges("text_to_survey_agent", should_continue, {"continue": "survey_ui_agent", "error": END})
     workflow.add_conditional_edges("survey_agent", should_continue, {"continue": "survey_ui_agent", "error": END})
     workflow.add_conditional_edges("survey_ui_agent", should_continue, {"continue": "persona_agent", "error": END})
     workflow.add_conditional_edges("persona_agent", should_continue, {"continue": "respondent_agent", "error": END})
@@ -98,12 +109,36 @@ def create_workflow():
     # 最终顺序流
     workflow.add_conditional_edges("analysis_agent", should_continue, {"continue": "plotting_agent", "error": END})
     workflow.add_conditional_edges("plotting_agent", should_continue, {"continue": "writer_agent", "error": END})
-    workflow.add_conditional_edges("writer_agent", should_continue, {"continue": END, "error": END})
+    workflow.add_conditional_edges("writer_agent", should_continue, {"continue": "exporter_agent", "error": END})
+    workflow.add_edge("exporter_agent", END)
     
     # 4. 编译
     return workflow.compile()
 
 DEFAULT_PROMPTS = {
+    "text_to_survey_prompt": """你是一位资深的社会学研究员与数据结构工程师。
+你的任务是将用户提供的非结构化/半结构化的问卷文本，转换为与系统兼容的标准 JSON 格式。
+调研主题：{topic}
+
+用户提供的原始问卷文本如下：
+{input_text}
+
+【转换要求】
+1. **提取标题**：如果有明确标题，请提取为 `survey_title`；如果没有，请根据主题自动生成一个标题。
+2. **分类题目**：
+   - 包含在 demographics 中的题：一般为个人基本情况调查题（包含年龄、性别、职业等的单选/多选题），请分配 id: d1, d2... 并提取 options 列表，每一个选项作为一个字符串。
+   - 包含在 likert_scales 中的题：量表打分题/满意度矩阵，一般为 1-5 分。请分配 id: l1, l2...并定义 scale_range 为 [1, 5]，提取 labels（如果原始文本没有给出标签，请默认设定 {{"1": "极不满意/极差", "5": "极其满意/极好"}} 或视语境生成）。
+   - 包含在 open_ended 中的题：需要手写回答的文字题。请分配 id: o1, o2...。
+3. **补充题目（可选）**：如果原始文本中的题目太少，无法支撑正常的调研，请根据主题自行推演并补齐一些相关题目。
+
+只输出 JSON，格式必须如下（绝不要省略任何字段或使用...）：
+{{
+  "survey_title": "提取或生成的标题",
+  "demographics": [{{"id": "d1", "question": "这道题问什么...", "options": ["选项1", "选项2", "..."]}}],
+  "likert_scales": [{{"id": "l1", "question": "这道量表题问什么...", "scale_range": [1, 5], "labels": {{"1": "极差", "5": "极好"}}}}],
+  "open_ended": [{{"id": "o1", "question": "这道开放题问什么..."}}]
+}}""",
+
     "survey_phase1_prompt": """你是一位资深的社会学研究员。请针对主题“{topic}”设计问卷的第一部分。
 要求包含：
 1. 问卷标题。
@@ -131,30 +166,34 @@ DEFAULT_PROMPTS = {
   "open_ended": [{{"id": "o1", "question": "..."}}]
 }}""",
 
-    "survey_ui_prompt": """你是一位世界顶尖的 UI/UX 设计师和前端架构师。
-你的任务是根据提供的问卷数据结构，生成一个极其美观、高端、且具有交互感的问卷调查网页 HTML。
+    "survey_ui_prompt": """你是一位专业的问卷设计师和排版专家。
+你的任务是根据提供的问卷数据结构，生成一个可以直接打印成 PDF 的专业问卷文档（HTML 格式）。
 
 【问卷结构】
 {questionnaire_json}
 
-【设计风格要求 - 关键！】
-1. **极致美学 (Wow) **: 必须使用极其现代的视觉元素。
-2. **配色方案**: 采用深色模式 (Dark Mode) 或高端的渐变色系（如深邃蓝转紫色，或极简白配高级灰）。
-3. **视觉层次**: 运用玻璃拟态 (Glassmorphism) 大量使用毛玻璃滤镜 (backdrop-filter: blur)。
-4. **动效**: 页面进入时应有平滑的淡入效果，题目切换时应有微小的过渡动画。
-5. **排版**: 使用大字体、充裕的留白 (Whitespace)，避免拥挤，使用 Google Fonts (如 Inter 或 Lexend)。
-6. **响应式**: 必须兼容移动端和桌面端。
+【设计风格要求 - 打印优先！】
+1. **打印友好**: 采用 A4 纸张尺寸，适合直接打印，无需切换模式。
+2. **配色方案**: 使用黑白或浅色调，确保打印清晰可读。
+3. **排版规范**: 
+   - 标题居中，字号 18pt，加粗
+   - 题目左对齐，字号 12pt
+   - 选项使用方框 □ 供勾选
+   - 李克特量表使用表格形式，1-5 分横向排列
+   - 开放题预留足够的横线供手写
+4. **分页控制**: 合理控制每页题目数量，避免题目跨页断裂。
+5. **页眉页脚**: 包含问卷标题和页码。
 
 【交互要求】
-- 包含顶部的进度条，随着用户填写实时更新。
-- 题目逐个或分块展示，带有平滑的垂直/水平滑动感。
-- 每个量表题 (Likert Scale) 的按钮悬停 (hover) 和选中 (active) 应有生动的动画。
-- 点击“提交”按钮时展示一个令人愉悦的 Success 动效。
+- 页面顶部提供"打印"按钮，点击直接调用浏览器打印功能。
+- 打印时自动隐藏打印按钮。
+- 页面加载完成后自动触发打印预览。
 
 【输出要求】
 1. 只输出一个完整的 HTML 文件字符串（包含 CSS 和简单的 Vanilla JS）。
 2. 不要包含额外的文字说明或 Markdown 标签。
 3. 代码要整洁，语义化。
+4. CSS 必须包含 @media print 规则，确保打印效果。
 
 直接输出 HTML。""",
 
@@ -167,6 +206,19 @@ DEFAULT_PROMPTS = {
 【画像背景分布要求 - 重要！】
 本调研聚焦于"泰安市留学生视角下的中国医疗体系发展"，但调查对象全部为中国本地居民。
 - 中国人画像：可分布在北京、上海、山东（如泰安及济南）、广东、四川等全国各地区。
+
+【年龄分布要求 - 必须严格遵守】
+- 青年（18-35岁）：约占 33%
+- 中年（36-55岁）：约占 33%
+- 老年（56岁以上）：约占 33%
+- 比例接近 1:1:1，确保三个年龄段均衡分布
+
+【学历分布要求 - 必须严格遵守】
+- 高中及以下：约占 35%
+- 专科/高职：约占 25%
+- 大学本科：约占 25%（降低比例）
+- 硕士及以上：约占 15%
+- 重点增加低学历群体（高中、专科）的比例，减少本科及以上学历的占比
 
 【问卷结构】
 {demographics_info}
@@ -183,7 +235,7 @@ DEFAULT_PROMPTS = {
 - proportion: 该类人群在 5000 条样本中的原始预计权重（后续会自动归一化）
 - demographics_fixed: 必须匹配问卷中 demographics 的 id，并从对应的 options 中选择一个符合该人设的文本
 - likert_distribution: 针对问卷中每个李克特量表题 id，设定其得分均值 mu (1.0-5.0) 和标准差 sigma (0.3-0.9)
-- open_ended_samples: 针对问卷中的开放题 id，以该人物的口吻提供 2 条极其写实、带有性格色彩的口语化回答
+- open_ended_samples: JSON对象格式，针对问卷中的开放题 id，以该人物的口吻提供 2 条极其写实、带有性格色彩的口语化回答。例如: {{"o1": "回答1", "o2": "回答2"}}
 
 【输出强制要求】
 只输出合法的 JSON 对象，不包含 Markdown 代码块。
@@ -413,21 +465,54 @@ JSON 结构：{{"personas": [{{画像1}}, {{画像2}}, ... ]}}""",
 """
 }
 
-def main():
-    # 重定向日志输出 (包含所有 agent 中的 print)
-    log_path = "data/output/run.log"
-    sys.stdout = TeeStdout(log_path)
-    sys.stderr = TeeStdout(log_path)
+def run_workflow(topic: str = None, persona_count: int = 21, log_callback=None, use_stdout_redirect=True, custom_prompts: dict = None, input_text: str = "", resume_persona_checkpoint: bool = False, use_existing_csv: bool = False, existing_csv_path: str = ""):
+    """
+    运行 LangGraph 工作流。
     
-    print("\n" + "🚀" * 30)
-    print("      PaperAnvil: 全自动 AI 学术调研报告生成系统")
-    print("🚀" * 30 + "\n")
-    print(f"📄 系统运行日志将同步保存至: {log_path}\n")
+    Args:
+        topic: 调研主题
+        persona_count: 模拟画像数量
+        log_callback: 接收日志的函数回调 (例如用于 GUI 更新)
+        use_stdout_redirect: 是否重定向全局 stdout (GUI 模式建议 False)
+        custom_prompts: 用户自定义的提示词字典
+        input_text: 已有问卷文本
+        resume_persona_checkpoint: 是否从断点恢复画像生成
+        use_existing_csv: 是否使用用户提供的已有 CSV 文件
+        existing_csv_path: 用户提供的 CSV 文件路径
+    """
+    # 只有在需要时才重定向日志输出
+    log_path = "data/output/run.log"
+    if use_stdout_redirect:
+        sys.stdout = TeeStdout(log_path)
+        sys.stderr = TeeStdout(log_path)
+    
+    def log(msg):
+        # 如果是字符串则直接打印/回调，否则转字符串
+        msg_str = str(msg)
+        print(msg_str)
+        if log_callback:
+            log_callback(msg_str)
+
+    log("\n" + "🚀" * 30)
+    log("      PaperAnvil: 全自动 AI 学术调研报告生成系统")
+    log("🚀" * 30 + "\n")
+    log(f"📄 系统运行日志将同步保存至: {log_path}\n")
+    
+    # 构建最终 Prompt
+    active_prompts = DEFAULT_PROMPTS.copy()
+    if custom_prompts:
+        log("检测到自定义提示词，正在应用覆盖...")
+        active_prompts.update(custom_prompts)
     
     # 初始化状态
     initial_state: SystemState = {
-        "topic": "人口老龄化与医疗服务需求研究 - 泰安市留学生视角下的中国医疗体系发展及中国当前的情况和可被借鉴的发展经验",
-        "persona_count": 21,
+        "topic": topic if topic else "人口老龄化与医疗服务需求研究 - 泰安市留学生视角下的中国医疗体系发展及中国当前的情况和可被借鉴的发展经验",
+        "input_text": input_text,
+        "bypass_survey_agent": bool(input_text.strip()),
+        "persona_count": persona_count,
+        "resume_persona_checkpoint": resume_persona_checkpoint,
+        "use_existing_csv": use_existing_csv,
+        "existing_csv_path": existing_csv_path,
         "questionnaire": {},
         "personas": [],
         "seed_responses": [],
@@ -441,12 +526,12 @@ def main():
         "semantic_stats": {},
         "error_logs": [],
         "current_step": "START",
-        "prompts": DEFAULT_PROMPTS
+        "prompts": active_prompts
     }
     
     app = create_workflow()
     
-    print("进入工作流流转阶段...")
+    log(">>> 工作流编译成功，开始进入流转阶段 (LangGraph Trace On)")
     
     try:
         final_state = initial_state.copy()
@@ -458,12 +543,24 @@ def main():
                     continue
                     
                 if node_name not in ["fork_node", "join_node"]:
-                    print(f"\n[{node_name}] ✅ 执行完毕，状态已更新。")
+                    log(f"\n[DEBUG] 节点「{node_name}」执行完成。")
                     
+                    # 打印一些关键的状态变更信息
+                    for key in state_update:
+                        if key == "questionnaire" and state_update[key]:
+                            log(f"  └─ 🚀 问卷结构已生成: {state_update[key].get('survey_title')}")
+                        elif key == "personas":
+                            log(f"  └─ 👥 已生成 {len(state_update[key])} 个虚拟画像")
+                        elif key == "seed_responses":
+                            log(f"  └─ 📥 已收集 {len(state_update[key])} 条初始调研样本")
+                        elif key == "raw_data_path" and state_update[key]:
+                            log(f"  └─ 📊 数据文件已准备: {state_update[key]}")
+                        elif key == "error_logs" and state_update[key]:
+                            log(f"  └─ ⚠️ 检测到错误日志: {state_update[key][-1]}")
                 
                 # 跟踪具体的流转
                 if "current_step" in state_update and node_name not in ["fork_node", "join_node"]:
-                    print(f"📦 全局追踪状态: -> {state_update['current_step']}")
+                    log(f"📦 全局追踪状态变更: {final_state.get('current_step', 'START')} -> {state_update['current_step']}")
                     
                 # 收集最新的变更拼接到 final_state 中以作全局引用
                 for k, v in state_update.items():
@@ -489,15 +586,22 @@ def main():
             
             if final_state.get("plot_image_paths"):
                 print(f"📊 已生成图表数量：{len(final_state['plot_image_paths'])}")
+            
+            return final_state
                 
     except Exception as e:
         print(f"\n❌ 工作流最外层运行发生异常：{e}")
         import traceback
         traceback.print_exc()
+        return final_state
     finally:
         # 恢复 stdout
         sys.stdout = sys.__stdout__
         sys.stderr = sys.__stderr__
+
+def main():
+    """CLI 入口点"""
+    run_workflow()
 
 if __name__ == "__main__":
     main()
