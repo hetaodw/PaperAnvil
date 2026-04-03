@@ -1,5 +1,10 @@
 # Environment
 .env
+.env.local
+.env.*.local
+
+# Config (may contain API keys)
+config.json
 
 # Python
 __pycache__/
@@ -23,6 +28,9 @@ wheels/
 .installed.cfg
 *.egg
 MANIFEST
+
+# PyInstaller
+*.spec
 
 # Testing
 .pytest_cache/
@@ -48,10 +56,25 @@ data/output/
 data/processed/
 data/raw_data/
 
+# Checkpoint files
+*.checkpoint.json
+persona_checkpoint.json
+
 # Large files
 *.zip
 
-# OS
+# Logs
 *.log
+
+# OS
 .DS_Store
 Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# DLL files (build artifacts)
+*.dll
